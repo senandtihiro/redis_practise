@@ -183,6 +183,31 @@ def acquire_lock_with_timeout(conn, lockname, acquire_timeout=10, lock_timeout=1
     return False
 
 
+def acquire_semaphore(conn, semname, limit, timeout=10):
+    """
+    计数信号量：可以让用户限制一项资源最多能够同时被多少个进程访问，
+    通常用于限定能够同时使用的资源数量
+    :param conn:
+    :param semname:
+    :param limit:
+    :param timeout:
+    :return: 
+    """
+    identifier = str(uuid.uuid4())
+    now = time.time()
+
+    pipeline = conn.pipeline(True)
+    # 删除超时时间（10s）以外的所有信号量
+    pipeline.zremrangebyscore(semname, '-inf', now - timeout)
+    pipeline.zadd(semname, identifier)
+    # 获取新增的信号量的排名
+    pipeline.zrank(semname, identifier)
+    if pipeline.execute()[-1] < limit:
+        return identifier
+    conn.zrem(semname, identifier)
+    return None
+
+
 def main():
     """
     将计数器存储到redis里面
