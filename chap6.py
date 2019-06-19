@@ -1,6 +1,7 @@
 import bisect
 import uuid
 import time
+import math
 
 import redis
 
@@ -150,6 +151,34 @@ def release_lock(conn, lockname, identifier):
             break
         except redis.exceptions.WatchError:
             pass
+
+    return False
+
+
+def acquire_lock_with_timeout(conn, lockname, acquire_timeout=10, lock_timeout=10):
+    """
+    加锁是为了防止锁的持有者崩溃的时候，锁不会自动被释放，导致锁一直出于已被获取的状态
+    :param conn:
+    :param lockname:
+    :param acquire_timeout:
+    :param lock_timeout:
+    :return:
+    """
+    identifier = uuid.uuid4()
+    lockname = 'lock:' + lockname
+    lock_timeout = int(math.ceil(lock_timeout))
+
+    end = time.time() + acquire_timeout
+    while time.time() < end:
+        if conn.setnx(lockname, identifier):
+            # 为锁设置过期时间，使得redis可以自动删除过期的锁
+            conn.expire(lockname, lock_timeout)
+            return identifier
+        # 计算锁的剩余生存时间
+        elif not conn.ttl(lockname):
+            # 为未设置超时时间的锁设置超时时间
+            conn.expire(lockname, lock_timeout)
+        time.sleep(0.001)
 
     return False
 
