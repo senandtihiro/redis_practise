@@ -2,8 +2,11 @@ import bisect
 import uuid
 import time
 import math
+import json
 
 import redis
+
+QUIT = False
 
 
 valid_characters = '`abcdefghijklmnopqrstuvwxyz{'
@@ -191,7 +194,7 @@ def acquire_semaphore(conn, semname, limit, timeout=10):
     :param semname:
     :param limit:
     :param timeout:
-    :return: 
+    :return:
     """
     identifier = str(uuid.uuid4())
     now = time.time()
@@ -207,6 +210,88 @@ def acquire_semaphore(conn, semname, limit, timeout=10):
     conn.zrem(semname, identifier)
     return None
 
+'''
+任务队列：通过将待执行的任务放入队列里面，并在之后对队列进行处理，
+用户可以推迟执行哪些需要一段时间才能完成的工作
+这种将工作交给任务处理器来执行对做法被成为任务队列
+'''
+# 构建一个邮件队列
+def send_sold_email_via_queue(conn, seller, item, price, buyer):
+    """
+    将待发送邮件放入一个由列表结构表示的队列里面
+    :param conn:
+    :param seller:
+    :param item:
+    :param price:
+    :param buyer:
+    :return:
+    """
+    data = {
+        'seller_id': seller,
+        'item_id': item,
+        'price': price,
+        'buyer_id': buyer,
+        'time': time.time()
+    }
+    print('debug data:', json.dumps(data))
+    conn.rpush('queue:email', json.dumps(data))
+
+
+def process_sold_email_queue(conn):
+    """
+    由于使用阻塞氏弹出，一次只能从队列里面弹出一封待发送邮件
+    希望一个队列能够处理多种不同类型的任务
+    :param conn:
+    :return:
+    """
+    while not QUIT:
+        # 使用阻塞版本的lpop() 从对列中弹出 一封 待发送的邮件，
+        # 如果队列中存在数据，返回；不存在则在等待30s之后返回
+        packed = conn.blpop(['queue:email'], 30)
+        print('debug packed:', packed)
+        if not packed:
+            continue
+        to_send = json.loads(packed[1])
+        # try:
+        #     fetch_data_and_send_sold_email(to_send)
+        # except EmailSendError as err:
+        #     pass
+        # else:
+        #     log_success('send sold email')
+
+def foo(*args):
+    print('callback args:', args)
+
+
+def worker_watch_queue(conn, queue, callbacks):
+    """
+    把邮件发送程序写成回调
+    :param conn:
+    :param queue:
+    :param callbacks:
+    :return:
+    """
+    # import pdb
+    # pdb.set_trace()
+    global QUIT
+    while not QUIT:
+        packed = conn.blpop([queue], 30)
+        if not packed:
+            continue
+        name, *args = json.loads(packed[1])
+        if name not in callbacks:
+            print('unknown callback {}'.format(name))
+            continue
+        callbacks[name](*args)
+        QUIT = False
+
+
+def worker_watch_queues():
+    """
+    用多个队列来实现优先级队列
+    :return:
+    """
+
 
 def main():
     """
@@ -218,8 +303,13 @@ def main():
     conn = redis.StrictRedis(host='localhost', port=6379, db=10, decode_responses=True)
     # res = autocomplete_on_prefix(conn, 'learn', 'abc')
     # print('debug res:', res)
-    res = acquire_lock(conn, 'test_setnx')
-    print('debug res:', res)
+    # res = acquire_lock(conn, 'test_setnx')
+    # print('debug res:', res)
+    # send_sold_email_via_queue(conn, 'he', 'book', 200, 'qiao')
+    # process_sold_email_queue(conn)
+
+    conn.rpush('queue:email', json.dumps(('foo', [1, 2, 3])))
+    worker_watch_queue(conn, 'queue:email', {'foo': foo})
 
 
 if __name__ == '__main__':
