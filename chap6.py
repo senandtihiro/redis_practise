@@ -300,6 +300,56 @@ def worker_watch_queues(conn, queues, callbacks):
         callbacks[name](*args)
 
 
+def execute_later(conn, queue, name, args, delay=0):
+    """
+    延迟任务
+    首先，把所有需要在未来执行的任务都添加到有序集合里面，并将任务的执行时间设置为分值
+    这样就能够确保取出来的任务永远是当前最先需要执行的
+    然后，用一个进程来查找有序集合里面是否存在可以立即被执行的任务
+    有的话，就从有序集合里面移除那个任务，并将它添加到适当的任务队列里面
+    :param conn:
+    :param queue:
+    :param name:
+    :param args:
+    :param delay:
+    :return:
+    """
+    identifier = str(uuid.uuid4())
+    # 每个任务用一个json列表来表示
+    # 唯一标示符，处理任务的队列的名字，处理任务的回调函数的名字，传递给回调函数的参数
+    item = json.dumps([identifier, queue, name, args])
+    if delay > 0:
+        conn.zadd('delayed:', time.time() + delay, item)
+    else:
+        # 立即可执行的任务将被直接插在任务队列里面
+        conn.rpush('queue:' + queue, item)
+    return identifier
+
+
+def poll_queue(conn):
+    """
+    从延迟队列里面获取可执行任务
+    :param conn:
+    :return:
+    """
+    global QUIT
+    while not QUIT:
+        item = conn.zrange('delayed:', 0, 0, withscores=True)
+        # 延迟队列里面没有包含任何任务或者任务的执行时间未到
+        if not item or item[0][1] > time.time():
+            time.sleep(0.01)
+            continue
+        item = item[0][0]
+        identifier, queue, func, args = json.loads(item)
+        locked = acquire_lock(conn, identifier)
+        if not locked:
+            continue
+        if conn.zrem('delayed:', item):
+            conn.rpush('queue:' + queue, item)
+
+        release_lock(conn, identifier, locked)
+
+
 def main():
     """
     将计数器存储到redis里面
@@ -315,8 +365,10 @@ def main():
     # send_sold_email_via_queue(conn, 'he', 'book', 200, 'qiao')
     # process_sold_email_queue(conn)
 
-    conn.rpush('queue:email', json.dumps(('foo', [1, 2, 3])))
-    worker_watch_queue(conn, 'queue:email', {'foo': foo})
+    # conn.rpush('queue:email', json.dumps(('foo', [1, 2, 3])))
+    # worker_watch_queue(conn, 'queue:email', {'foo': foo})
+    execute_later(conn, 'test_delay', 'foo', [1, 2, 3], delay=3)
+    poll_queue(conn)
 
 
 if __name__ == '__main__':
