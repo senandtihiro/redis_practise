@@ -148,7 +148,7 @@ def release_lock(conn, lockname, identifier):
             if pipe.get(lockname) == identifier:
                 pipe.multi()
                 pipe.delete(lockname)
-                pipe.excute()
+                pipe.execute()
                 return True
             pipe.unwatch()
             break
@@ -350,6 +350,92 @@ def poll_queue(conn):
         release_lock(conn, identifier, locked)
 
 
+def create_chat(conn, sender, recipients, message, chat_id=None):
+    """
+    创建群组聊天会话
+    :param conn:
+    :param sender:
+    :param recipients:
+    :param message:
+    :param chat_id:
+    :return:
+    """
+    chat_id = chat_id or str(conn.incr('ids:chat:'))
+    recipients.append(sender)
+    # 利用生成器表达式生成字典
+    recipientsd = dict((r, 0) for r in recipients)
+    pipeline = conn.pipeline(True)
+    pipeline.zadd('chat:' + chat_id, **recipientsd)
+    for rec in recipients:
+        pipeline.zadd('seen:' + rec, 0, chat_id)
+    pipeline.execute()
+
+    return send_message(conn, chat_id, sender, message)
+
+
+def send_message(conn, chat_id, sender, message):
+    """
+    发送消息
+    :param conn:
+    :param chat_id:
+    :param sender:
+    :param message:
+    :return:
+    """
+    identifier = acquire_lock(conn, 'chat:' + chat_id)
+    if not identifier:
+        raise Exception('cannot get the lock')
+    try:
+        mid = conn.incr('ids:' + chat_id)
+        ts = time.time()
+        packed = json.dumps({
+            'id': mid,
+            'ts': ts,
+            'sender': sender,
+            'message': message
+        })
+        conn.zadd('msgs:' + chat_id, mid, packed)
+    finally:
+        release_lock(conn, 'chat:' + chat_id, identifier)
+
+    return chat_id
+
+
+def fetch_pending_message(conn, recipient):
+    """
+    获取消息
+    :param conn:
+    :param recipient:
+    :return:
+    """
+    # import pdb
+    # pdb.set_trace()
+    seen = conn.zrange('seen:' + recipient, 0, -1, withscores=True)
+    pipeline = conn.pipeline(True)
+    for chat_id, seen_id in seen:
+        pipeline.zrangebyscore('msgs:' + chat_id, seen_id + 1, 'inf')
+    chat_info = zip(seen, pipeline.execute())
+    for i, ((chat_id, seen_id), messages) in enumerate(chat_info):
+        print('debug i, chat_id, seen_id, messages:', i, chat_id, seen_id, messages)
+        if not messages:
+            continue
+        messages[:] = map(json.loads, messages)
+        seen_id = messages[-1]['id']
+        conn.zadd('chat:' + chat_id, seen_id, recipient)
+
+        min_id = conn.zrange('chat:' + chat_id, 0, 0, withscores=True)
+        print('debug min_id:', min_id)
+        pipeline.zadd('seen:' + recipient, chat_id, seen_id)
+        if min_id:
+            pipeline.zrangebyscore('msgs:' + chat_id, 0, min_id[0][1])
+        chat_info = dict(chat_info)
+        chat_info[i] = (chat_id, messages)
+    pipeline.execute()
+
+    return chat_info
+
+
+
 def main():
     """
     将计数器存储到redis里面
@@ -367,8 +453,14 @@ def main():
 
     # conn.rpush('queue:email', json.dumps(('foo', [1, 2, 3])))
     # worker_watch_queue(conn, 'queue:email', {'foo': foo})
-    execute_later(conn, 'test_delay', 'foo', [1, 2, 3], delay=3)
-    poll_queue(conn)
+    # execute_later(conn, 'test_delay', 'foo', [1, 2, 3], delay=3)
+    # poll_queue(conn)
+
+    create_chat(conn, 'he2', ['xuke', 'dazhi'], 'python group')
+    send_message(conn, '1', 'he2', 'the second message')
+
+    chat_info = fetch_pending_message(conn, 'he2')
+    print('debug chat_info:', chat_info)
 
 
 if __name__ == '__main__':
