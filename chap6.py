@@ -271,8 +271,6 @@ def worker_watch_queue(conn, queue, callbacks):
     :param callbacks:
     :return:
     """
-    # import pdb
-    # pdb.set_trace()
     global QUIT
     while not QUIT:
         packed = conn.blpop([queue], 30)
@@ -286,11 +284,20 @@ def worker_watch_queue(conn, queue, callbacks):
         QUIT = False
 
 
-def worker_watch_queues():
+def worker_watch_queues(conn, queues, callbacks):
     """
     用多个队列来实现优先级队列
     :return:
     """
+    while not QUIT:
+        packed = conn.blpop(queues)
+        if not packed:
+            continue
+        name, args = json.loads(packed[1])
+        if name not in callbacks:
+            print('unknown callback')
+            continue
+        callbacks[name](*args)
 
 
 def main():
