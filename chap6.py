@@ -3,6 +3,8 @@ import uuid
 import time
 import math
 import json
+import os
+from collections import defaultdict, deque
 
 import redis
 
@@ -435,6 +437,135 @@ def fetch_pending_message(conn, recipient):
     return chat_info
 
 
+aggregates = defaultdict(lambda: defaultdict(int))
+
+def daily_country_aggregates(conn, line):
+    if line:
+        line = line.split()
+        ip = line[0]
+        day = line[1]
+        country = find_city_by_ip_local(ip)
+        aggregates[day][country] += 1
+    for day, aggregate in list(aggregates.items()):
+        conn.zadd('daily:country:' + day, **aggregate)
+        del aggregates[day]
+
+
+def find_city_by_ip_local(ip):
+    return 'USA'
+
+
+def copy_logs_to_redis(conn, path, channel, count=10, limit=2**30, quit_when_done=True):
+    """
+    复制日志文件并在之后对无用的数据进行清理
+    :param conn:
+    :param path:
+    :param channel:
+    :param count:
+    :param limit:
+    :param quit_when_done:
+    :return:
+    """
+    bytes_in_redis = 0
+    waiting = deque()
+    # 创建用于向客户端发送消息的群组
+    create_chat(conn, 'source', list(map(str, range(count))), '', channel)
+    count = str(count)
+    # 遍历所有日志文件
+    for logfile in sorted(os.listdir(path)):
+        full_path = os.path.join(path, logfile)
+        fsize = os.stat(full_path).st_size
+        while bytes_in_redis + fsize > limit:
+            cleaned = _clean(conn, channel, waiting, count)
+            if cleaned:
+                bytes_in_redis -= cleaned
+            else:
+                time.sleep(0.25)
+
+        with open(full_path, 'rb') as inp:
+            block = ''
+            while block:
+                block = inp.read(2 ** 17)
+                conn.append(channel + logfile, block)
+
+        # 提醒监听者，文件已经准备就绪
+        send_message(conn, channel, 'source', logfile)
+
+        bytes_in_redis += fsize
+        waiting.append((logfile, fsize))
+
+    if quit_when_done:
+        send_message(conn, channel, 'source', ':done')
+
+    while waiting:
+        cleaned = _clean(conn, channel, waiting, count)
+        if cleaned:
+            bytes_in_redis -= cleaned
+        else:
+            time.sleep(0.25)
+
+
+def _clean(conn, channel, waiting, count):
+    if not waiting:
+        return 0
+    w0 = waiting[0][0]
+    if conn.get(channel + w0 + ':done') == count:
+        conn.delete(channel + w0, channel + w0 + ':done')
+        return waiting.popleft()[1]
+    return 0
+
+
+def process_logs_from_redis(conn, id, callback):
+    while 1:
+        fdata = fetch_pending_message(conn, id)
+        for ch, mdata in fdata:
+            for message in mdata:
+                logfile = message['message']
+                if logfile == ':done':
+                    return
+                elif not logfile:
+                    continue
+
+                block_reader = readblocks
+                for line in readlines(conn, ch+logfile, block_reader):
+                    callback(conn, line)
+                callback(conn, None)
+                conn.incr(ch + logfile + ':done')
+        if not fdata:
+            time.sleep(0.1)
+
+
+def readblocks(conn, key, blocksize=2**17):
+    """
+    从redis里面读取数据块
+    :param conn:
+    :param key:
+    :param blocksize:
+    :return:
+    """
+    lb = blocksize
+    pos = 0
+    while lb == blocksize:
+        block = conn.substr(key, pos, pos + blocksize - 1)
+        yield block
+        lb = len(block)
+        pos += lb
+    yield ''
+
+
+def readlines(conn, key, rblocks):
+    out = ''
+    for block in rblocks:
+        out += block
+        posn = out.rfind('\n')
+        if posn > 0:
+            for line in out[:posn].split('\n'):
+                yield line + '\n'
+            out = out[posn+1:]
+        if not block:
+            yield out
+            break
+
 
 def main():
     """
@@ -456,11 +587,14 @@ def main():
     # execute_later(conn, 'test_delay', 'foo', [1, 2, 3], delay=3)
     # poll_queue(conn)
 
-    create_chat(conn, 'he2', ['xuke', 'dazhi'], 'python group')
-    send_message(conn, '1', 'he2', 'the second message')
+    # create_chat(conn, 'he2', ['xuke', 'dazhi'], 'python group')
+    # send_message(conn, '1', 'he2', 'the second message')
+    #
+    # chat_info = fetch_pending_message(conn, 'he2')
+    # print('debug chat_info:', chat_info)
 
-    chat_info = fetch_pending_message(conn, 'he2')
-    print('debug chat_info:', chat_info)
+    line = '173.194.38.137 2011-19-10 13:55:36 achievement-762'
+    daily_country_aggregates(conn, line)
 
 
 if __name__ == '__main__':
