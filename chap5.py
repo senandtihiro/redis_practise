@@ -1,10 +1,10 @@
 import time
 import bisect
 import logging
-
 from datetime import datetime
-
+import functools
 import redis
+import json
 
 
 # 使用redis来记录最新日志
@@ -196,6 +196,69 @@ def clean_counters(conn):
         time.sleep(max(60 - duration, 1))
 
 
+CONFIGS = {}
+CHECKED = {}
+config_connection = None
+
+
+def get_config(conn, type, component, wait=1):
+    return '{}'
+    # key = 'config:%s:%s'%(type, component)
+    #
+    # # 检查是否需要对这个组件的配置信息进行更新。
+    # if CHECKED.get(key) < time.time() - wait:
+    #     # 有需要对配置进行更新，记录最后一次检查这个连接的时间。
+    #     CHECKED[key] = time.time()
+    #     # 取得Redis存储的组件配置。
+    #     config = json.loads(conn.get(key) or '{}')
+    #     # 将潜在的Unicode关键字参数转换为字符串关键字参数。
+    #     config = dict((str(k), config[k]) for k in config)
+    #     # 取得组件正在使用的配置。
+    #     old_config = CONFIGS.get(key)
+    #
+    #     # 如果两个配置并不相同……
+    #     if config != old_config:
+    #         # ……那么对组件的配置进行更新。
+    #         CONFIGS[key] = config
+    #
+    # return CONFIGS.get(key)
+
+
+REDIS_CONNECTIONS = {}
+
+
+def redis_connection(component, wait=1):
+    key = 'config:redis' + component
+    def wrapper(function):
+        @functools.wraps(function)
+        def call(*args, **kwargs):
+            print('debug decorator call function:', function)
+            print('debug decorator call args:', *args)
+            print('debug decorator call args:', **kwargs)
+            # old_config = CONFIGS.get(key, object())
+            # _config = get_config(config_connection, 'redis', component, wait)
+            #
+            config = {}
+            # for k, v in _config.iteritems():
+            #     config[k.encode('utf-8')] = v
+            #
+            # if config != old_config:
+            REDIS_CONNECTIONS[key] = redis.Redis(**config)
+            res = function(REDIS_CONNECTIONS.get(key), *args, **kwargs)
+            print('debug res:', res)
+            return res
+        return call
+    return wrapper
+
+
+@redis_connection('logs')                   # redis_connection()装饰器非常容易使用。
+def log_recent(conn, app, message):         # 这个函数的定义和之前展示的一样，没有发生任何变化。
+    print('debug conn', conn)
+    print('debug app', app)
+    print('debug message', message)
+    return 'aaa'
+
+
 def main():
     """
     将计数器存储到redis里面
@@ -216,7 +279,8 @@ def main():
     # for i in range(30):
     #     des = log_recent(conn, 'common_log', 'common hhhh{}'.format(i))
     #     res.append(des)
-    log_common(conn, 'common_log', 'common hhhh')
+    # log_common(conn, 'common_log', 'common hhhh')
+    log_recent('main', 'User235 logged in')
 
 
 if __name__ == '__main__':
